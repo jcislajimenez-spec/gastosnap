@@ -1,0 +1,7 @@
+{
+  "name": "GastoSnap",
+  "description": "Fotografía tus tickets de compra y haz un seguimiento automático de tus gastos mensuales por categorías.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
