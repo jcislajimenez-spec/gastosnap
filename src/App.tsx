@@ -1,845 +1,390 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Upload, Plus, Trash2, Settings, PieChart, List, Image as ImageIcon, X, Loader2, Check, RefreshCw, ArrowLeft } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Camera, Plus, PieChart as PieChartIcon, List, Loader2, Check, X, Trash2, Settings, TrendingUp, TrendingDown, Minus, AlertCircle } from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine, ComposedChart } from 'recharts';
+import { format, parseISO, isSameMonth, subMonths } from 'date-fns';
+import { es } from 'date-fns/locale';
+import { parseReceipt, ReceiptData } from './services/gemini';
 import { cn } from './lib/utils';
+import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from './lib/supabase';
 
-type Category = 'Alimentación' | 'Transporte' | 'Ocio' | 'Hogar' | 'Salud' | 'Otros';
-
-interface Expense {
+export interface Expense {
   id: string;
   merchant: string;
   amount: number;
-  date: string; // YYYY-MM-DD
-  category: Category;
-  imageUrl?: string; // OJO: por ahora no se sincroniza (se queda solo local)
+  date: string;
+  category: string;
+  imageUrl?: string;
   createdAt: string;
 }
 
-interface ParsedReceipt {
-  merchant: string;
-  amount: number;
-  date: string;
-  category: Category;
-}
-
-const categories: { name: Category; icon: React.ReactNode }[] = [
-  { name: 'Alimentación', icon: '🍽️' },
-  { name: 'Transporte', icon: '🚗' },
-  { name: 'Ocio', icon: '🎉' },
-  { name: 'Hogar', icon: '🏠' },
-  { name: 'Salud', icon: '🏥' },
-  { name: 'Otros', icon: '📦' },
-];
-
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(amount);
+const CATEGORY_COLORS: Record<string, string> = {
+  'Alimentación': '#10b981',
+  'Restaurantes': '#f59e0b',
+  'Transporte': '#3b82f6',
+  'Ocio': '#8b5cf6',
+  'Suministros': '#06b6d4',
+  'Compras': '#ec4899',
+  'Salud': '#ef4444',
+  'Educación': '#f97316',
+  'Hogar': '#14b8a6',
+  'Mascotas': '#a855f7',
+  'Viajes': '#0ea5e9',
+  'Seguros': '#64748b',
+  'Tecnología': '#84cc16',
+  'Otros': '#9ca3af',
 };
 
-const formatDate = (dateStr: string) => {
-  const date = new Date(dateStr);
-  return new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: 'short' }).format(date);
-};
-
-const getCurrentMonth = () => {
-  const now = new Date();
-  return new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(now);
-};
-
-const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tickets'>('dashboard');
-  const [showCamera, setShowCamera] = useState(false);
-  const [showUpload, setShowUpload] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [pendingExpense, setPendingExpense] = useState<ParsedReceipt | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [isEditingLimit, setIsEditingLimit] = useState(false);
-  const [tempLimit, setTempLimit] = useState('');
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
+export default function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [monthlyLimit, setMonthlyLimit] = useState<number>(1250);
-  const [isLoadingData, setIsLoadingData] = useState(true);
-  const [dataError, setDataError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [pendingExpense, setPendingExpense] = useState<ReceiptData | null>(null);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'list'>('dashboard');
+  const [isEditingLimit, setIsEditingLimit] = useState(false);
+  const [tempLimit, setTempLimit] = useState('1250');
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Carga inicial desde Supabase
   useEffect(() => {
-    // Cache local (por si un día Supabase falla / estás sin cobertura)
-    localStorage.setItem('gastosnap_expenses_cache', JSON.stringify(expenses));
-  }, [expenses]);
-
-  useEffect(() => {
-    localStorage.setItem('gastosnap_limit_cache', monthlyLimit.toString());
-  }, [monthlyLimit]);
-
-  useEffect(() => {
-    // 1) Carga inicial desde Supabase (y si falla, tiramos del cache local)
-    const load = async () => {
-      setIsLoadingData(true);
-      setDataError(null);
-
+    const loadData = async () => {
       try {
-        // Tickets (gastos)
-        const { data: rows, error } = await supabase
+        setIsLoading(true);
+        const { data: tickets, error: ticketsError } = await supabase
           .from('tickets')
           .select('*')
-          .order('date', { ascending: false })
-          .order('created_at', { ascending: false });
+          .order('date', { ascending: false });
+          
+        if (ticketsError) throw ticketsError;
+        
+        if (tickets) {
+          setExpenses(tickets.map(t => ({
+            id: t.id,
+            merchant: t.description || '',
+            amount: Number(t.amount),
+            date: t.date,
+            category: t.category || 'Otros',
+            createdAt: t.created_at
+          })));
+        }
 
-        if (error) throw error;
-
-        const mapped: Expense[] = (rows ?? []).map((r: any) => ({
-          id: r.id,
-          merchant: r.description ?? '',
-          amount: Number(r.amount ?? 0),
-          date: r.date,
-          category: (r.category ?? 'Otros') as Category,
-          // imageUrl: no se sincroniza todavía (más adelante lo metemos en Storage)
-          createdAt: r.created_at ?? new Date().toISOString(),
-        }));
-
-        setExpenses(mapped);
-
-        // Límite mensual (tabla opcional app_settings)
-        const { data: settingsRows, error: settingsErr } = await supabase
+        const { data: settings, error: settingsError } = await supabase
           .from('app_settings')
           .select('monthly_limit')
           .eq('id', 1)
           .maybeSingle();
-
-        if (!settingsErr && settingsRows?.monthly_limit != null) {
-          setMonthlyLimit(Number(settingsRows.monthly_limit));
-        } else {
-          // fallback a cache local si aún no existe la tabla/registro
-          const cached = localStorage.getItem('gastosnap_limit_cache');
-          if (cached) setMonthlyLimit(parseFloat(cached));
+          
+        if (!settingsError && settings) {
+          setMonthlyLimit(Number(settings.monthly_limit));
+          setTempLimit(settings.monthly_limit.toString());
         }
-      } catch (err: any) {
-        console.error(err);
-        setDataError('No he podido cargar datos de Supabase. Usando el cache local.');
-        const cachedExpenses = localStorage.getItem('gastosnap_expenses_cache');
-        const cachedLimit = localStorage.getItem('gastosnap_limit_cache');
-        if (cachedExpenses) setExpenses(JSON.parse(cachedExpenses));
-        if (cachedLimit) setMonthlyLimit(parseFloat(cachedLimit));
+      } catch (error) {
+        console.error('Error loading data:', error);
       } finally {
-        setIsLoadingData(false);
+        setIsLoading(false);
       }
     };
-
-    load();
+    loadData();
   }, []);
 
-  // Cálculos del mes actual
-  const currentMonthExpenses = useMemo(() => {
-    const now = new Date();
-    const month = now.getMonth();
-    const year = now.getFullYear();
-
-    return expenses.filter(exp => {
-      const d = new Date(exp.date);
-      return d.getMonth() === month && d.getFullYear() === year;
-    });
-  }, [expenses]);
-
-  const totalSpent = useMemo(() => currentMonthExpenses.reduce((sum, exp) => sum + exp.amount, 0), [currentMonthExpenses]);
-  const remaining = monthlyLimit - totalSpent;
-  const percentageUsed = monthlyLimit > 0 ? Math.min((totalSpent / monthlyLimit) * 100, 100) : 0;
-
-  const expensesByCategory = useMemo(() => {
-    const byCat: Record<string, number> = {};
-    currentMonthExpenses.forEach(exp => {
-      byCat[exp.category] = (byCat[exp.category] || 0) + exp.amount;
-    });
-    return byCat;
-  }, [currentMonthExpenses]);
-
-  const lastMonthComparison = useMemo(() => {
-    const now = new Date();
-    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const month = lastMonth.getMonth();
-    const year = lastMonth.getFullYear();
-
-    const lastMonthExpenses = expenses.filter(exp => {
-      const d = new Date(exp.date);
-      return d.getMonth() === month && d.getFullYear() === year;
-    });
-
-    const lastMonthTotal = lastMonthExpenses.reduce((sum, exp) => sum + exp.amount, 0);
-    if (lastMonthTotal === 0) return 0;
-
-    return ((totalSpent - lastMonthTotal) / lastMonthTotal) * 100;
-  }, [expenses, totalSpent]);
-
-  const startCamera = async () => {
-    setShowCamera(true);
-    setShowUpload(false);
-    setSelectedImage(null);
-    setPendingExpense(null);
-    setIsProcessing(false);
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-    } catch (err) {
-      console.error('Error accessing camera:', err);
-      alert('No puedo acceder a la cámara. Prueba con "Subir foto".');
-      setShowCamera(false);
-      setShowUpload(true);
-    }
-  };
-
-  const stopCamera = () => {
-    if (videoRef.current?.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-      videoRef.current.srcObject = null;
-    }
-    setShowCamera(false);
-  };
-
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    const imageData = canvas.toDataURL('image/jpeg');
-    setSelectedImage(imageData);
-    stopCamera();
-    processReceipt(imageData);
-  };
-
-  const processReceipt = async (imageData: string) => {
-    setIsProcessing(true);
-    setPendingExpense(null);
-
-    try {
-      // Aquí llamas a tu Gemini service (lo dejo tal cual estaba)
-      const response = await fetch('/api/parse-receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: imageData }),
-      });
-
-      // Si tu proyecto no tiene endpoint /api/parse-receipt, no pasa nada:
-      // tu app ya tenía otra lógica; conserva la tuya si procede.
-      // Este bloque se mantiene para no romper tu UI.
-      if (!response.ok) {
-        throw new Error('No se pudo procesar el ticket');
-      }
-
-      const parsed = (await response.json()) as ParsedReceipt;
-
-      // Normalizamos fecha
-      const date = parsed.date || new Date().toISOString().slice(0, 10);
-
-      setPendingExpense({
-        merchant: parsed.merchant || 'Sin nombre',
-        amount: parsed.amount || 0,
-        date,
-        category: parsed.category || 'Otros',
-      });
-    } catch (err) {
-      console.error(err);
-      alert('No he podido leer el ticket con IA. Puedes introducirlo manualmente.');
-      // fallback manual mínimo
-      setPendingExpense({
-        merchant: '',
-        amount: 0,
-        date: new Date().toISOString().slice(0, 10),
-        category: 'Otros',
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      setSelectedImage(result);
-      processReceipt(result);
-    };
-    reader.readAsDataURL(file);
-  };
+    try {
+      setIsProcessing(true);
+      const objectUrl = URL.createObjectURL(file);
+      setPreviewImage(objectUrl);
 
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!selectedImage) {
-      setPreviewImage(null);
-      return;
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64String = (reader.result as string).split(',')[1];
+        try {
+          const data = await parseReceipt(base64String, file.type);
+          setPendingExpense(data);
+        } catch (error) {
+          alert('Error al procesar el ticket. Puedes introducirlo manualmente.');
+          setPendingExpense({
+            merchant: '',
+            amount: 0,
+            date: new Date().toISOString().split('T')[0],
+            category: 'Otros'
+          });
+        } finally {
+          setIsProcessing(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (error) {
+      setIsProcessing(false);
     }
-    setPreviewImage(selectedImage);
-  }, [selectedImage]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   const handleConfirmExpense = async () => {
     if (!pendingExpense) return;
-
     try {
       setIsProcessing(true);
-
-      const payload = {
-        date: pendingExpense.date, // 'YYYY-MM-DD'
-        category: pendingExpense.category,
-        description: pendingExpense.merchant, // en tu tabla se llama "description"
-        amount: pendingExpense.amount,
-        // user_id: null por ahora (multiusuario vendrá con login)
-      };
-
       const { data, error } = await supabase
         .from('tickets')
-        .insert(payload)
-        .select('*')
-        .single();
+        .insert([{
+          description: pendingExpense.merchant,
+          amount: pendingExpense.amount,
+          date: pendingExpense.date,
+          category: pendingExpense.category
+        }])
+        .select().single();
 
       if (error) throw error;
 
-      const newExpense: Expense = {
+      setExpenses(prev => [{
         id: data.id,
-        merchant: data.description ?? pendingExpense.merchant,
-        amount: Number(data.amount ?? pendingExpense.amount),
-        date: data.date ?? pendingExpense.date,
-        category: (data.category ?? pendingExpense.category) as Category,
-        // imageUrl no se guarda aún en Supabase (en cuanto quieras lo metemos en Storage)
-        imageUrl: previewImage || undefined,
-        createdAt: data.created_at ?? new Date().toISOString(),
-      };
-
-      setExpenses(prev => [newExpense, ...prev]);
+        merchant: data.description,
+        amount: Number(data.amount),
+        date: data.date,
+        category: data.category,
+        createdAt: data.created_at,
+      }, ...prev]);
+      
       setPendingExpense(null);
       setPreviewImage(null);
-      setSelectedImage(null);
-      setShowUpload(false);
-    } catch (err) {
-      console.error(err);
-      alert('No he podido guardar el gasto en Supabase. Revisa conexión/variables.');
+    } catch (error) {
+      alert('Error al guardar en la nube.');
     } finally {
       setIsProcessing(false);
     }
   };
 
   const handleDeleteExpense = async (id: string) => {
-    // Eliminamos directamente para evitar problemas con confirm() en el iframe
-    // 1) UI optimista
-    const previous = expenses;
-    setExpenses(prev => prev.filter(e => e.id !== id));
-
     try {
       const { error } = await supabase.from('tickets').delete().eq('id', id);
       if (error) throw error;
-    } catch (err) {
-      console.error(err);
-      alert('No he podido borrar el gasto en Supabase. Te restauro la lista.');
-      setExpenses(previous);
+      setExpenses(prev => prev.filter(e => e.id !== id));
+    } catch (error) {
+      alert('Error al eliminar.');
     }
   };
 
-  const refreshFromSupabase = async () => {
-    setIsLoadingData(true);
-    setDataError(null);
-    try {
-      const { data: rows, error } = await supabase
-        .from('tickets')
-        .select('*')
-        .order('date', { ascending: false })
-        .order('created_at', { ascending: false });
+  // Datos derivados para gráficos
+  const currentMonth = new Date();
+  const previousMonth = subMonths(currentMonth, 1);
+  const currentMonthExpenses = expenses.filter(e => isSameMonth(parseISO(e.date), currentMonth));
+  const previousMonthExpenses = expenses.filter(e => isSameMonth(parseISO(e.date), previousMonth));
+  const totalCurrentMonth = currentMonthExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const totalPreviousMonth = previousMonthExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const percentChange = totalPreviousMonth === 0 ? (totalCurrentMonth > 0 ? 100 : 0) : ((totalCurrentMonth - totalPreviousMonth) / totalPreviousMonth) * 100;
+  const isOverLimit = totalCurrentMonth > monthlyLimit;
+  
+  const historyData = Array.from({ length: 6 }).map((_, i) => {
+    const monthDate = subMonths(currentMonth, i);
+    const total = expenses.filter(e => isSameMonth(parseISO(e.date), monthDate)).reduce((sum, e) => sum + e.amount, 0);
+    return { name: format(monthDate, 'MMM', { locale: es }), total, date: monthDate };
+  }).reverse();
 
-      if (error) throw error;
+  const chartData = Object.entries(currentMonthExpenses.reduce((acc, e) => {
+    acc[e.category] = (acc[e.category] || 0) + e.amount;
+    return acc;
+  }, {} as Record<string, number>)).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 
-      const mapped: Expense[] = (rows ?? []).map((r: any) => ({
-        id: r.id,
-        merchant: r.description ?? '',
-        amount: Number(r.amount ?? 0),
-        date: r.date,
-        category: (r.category ?? 'Otros') as Category,
-        createdAt: r.created_at ?? new Date().toISOString(),
-      }));
+  const gaugeMax = Math.max(monthlyLimit * 1.2, totalCurrentMonth);
+  const gaugeData = [{ name: 'Gastado', value: totalCurrentMonth }, { name: 'Restante', value: Math.max(0, gaugeMax - totalCurrentMonth) }];
 
-      setExpenses(mapped);
-    } catch (err) {
-      console.error(err);
-      setDataError('No he podido refrescar desde Supabase.');
-    } finally {
-      setIsLoadingData(false);
-    }
-  };
+  if (isLoading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><Loader2 className="animate-spin text-indigo-600" size={40} /></div>;
 
-  const Gauge = () => {
-    const radius = 120;
-    const circumference = Math.PI * radius;
-    const strokeDashoffset = circumference - (percentageUsed / 100) * circumference;
-
-    return (
-      <div className="relative flex items-center justify-center">
-        <svg width="280" height="160" viewBox="0 0 280 160">
-          <path
-            d={`M 20 140 A ${radius} ${radius} 0 0 1 260 140`}
-            fill="none"
-            stroke="#E5E7EB"
-            strokeWidth="20"
-            strokeLinecap="round"
-          />
-          <path
-            d={`M 20 140 A ${radius} ${radius} 0 0 1 260 140`}
-            fill="none"
-            stroke={percentageUsed > 90 ? '#EF4444' : percentageUsed > 70 ? '#F59E0B' : '#6366F1'}
-            strokeWidth="20"
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            style={{ transition: 'stroke-dashoffset 0.5s ease' }}
-          />
-        </svg>
-
-        <div className="absolute text-center">
-          <div className="text-5xl font-bold text-gray-900">{formatCurrency(totalSpent).replace('€', '')}€</div>
-          <div className="text-gray-500 text-lg">Límite: {formatCurrency(monthlyLimit)}</div>
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-24">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-10 px-4 h-16 flex items-center justify-between max-w-md mx-auto">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white"><Camera size={18} /></div>
+          <h1 className="font-semibold text-lg tracking-tight">Isla Gasto</h1>
         </div>
+      </header>
 
-        <div className="absolute right-6 top-1/2 transform -translate-y-1/2">
-          <span className="bg-white px-3 py-1 rounded-full shadow text-gray-700 font-medium">LÍMITE</span>
-        </div>
-      </div>
-    );
-  };
-
-  const DashboardView = () => (
-    <div className="space-y-6 pb-24">
-      <div className="bg-white rounded-3xl shadow-sm p-6">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <div className="text-gray-500 text-sm font-medium">ESTADO DEL LÍMITE</div>
-            <div className="text-2xl font-bold text-gray-900">{new Date().toLocaleString('es-ES', { month: 'long' })}</div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={refreshFromSupabase}
-              className="p-2 rounded-full hover:bg-gray-100"
-              title="Refrescar"
-            >
-              <RefreshCw className={cn('w-5 h-5 text-gray-500', isLoadingData && 'animate-spin')} />
-            </button>
-
-            <button onClick={() => setShowSettings(true)} className="p-2 rounded-full hover:bg-gray-100">
-              <Settings className="w-5 h-5 text-gray-500" />
-            </button>
-          </div>
-        </div>
-
-        {dataError && (
-          <div className="mb-4 rounded-xl bg-amber-50 text-amber-700 px-4 py-3 text-sm">
-            {dataError}
-          </div>
-        )}
-
-        <Gauge />
-      </div>
-
-      <div className="bg-white rounded-3xl shadow-sm p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-900">Gastos por Categoría</h2>
-          <div className={cn(
-            "px-3 py-1 rounded-full text-sm font-medium",
-            lastMonthComparison > 0 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600"
-          )}>
-            {lastMonthComparison > 0 ? "↗" : "↘"} {Math.abs(lastMonthComparison).toFixed(0)}% vs mes ant.
-          </div>
-        </div>
-
-        <div className="space-y-3">
-          {categories.map(cat => {
-            const amount = expensesByCategory[cat.name] || 0;
-            const percent = totalSpent > 0 ? (amount / totalSpent) * 100 : 0;
-
-            return (
-              <div key={cat.name} className="flex items-center space-x-3">
-                <div className="text-2xl">{cat.icon}</div>
-                <div className="flex-1">
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium text-gray-700">{cat.name}</span>
-                    <span className="font-semibold text-gray-900">{formatCurrency(amount)}</span>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded-full h-2 mt-1">
-                    <div
-                      className="bg-indigo-500 h-2 rounded-full"
-                      style={{ width: `${percent}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="bg-white rounded-3xl shadow-sm p-6">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Últimos Tickets</h2>
-        <div className="space-y-3">
-          {expenses.slice(0, 3).map(exp => (
-            <div key={exp.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-2xl">
-              <div className="flex items-center space-x-3">
-                <div className="text-2xl">
-                  {categories.find(c => c.name === exp.category)?.icon}
-                </div>
+      <main className="max-w-md mx-auto p-4 space-y-6">
+        {activeTab === 'dashboard' ? (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+            {/* Velocímetro */}
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 relative overflow-hidden">
+              <div className="flex justify-between items-start mb-2">
                 <div>
-                  <div className="font-semibold text-gray-900">{exp.merchant || '—'}</div>
-                  <div className="text-sm text-gray-500">{formatDate(exp.date)}</div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-tighter">Estado del Límite</p>
+                  <h2 className="text-xl font-semibold text-slate-800 capitalize">{format(currentMonth, 'MMMM', { locale: es })}</h2>
                 </div>
-              </div>
-              <div className="font-bold text-gray-900">{formatCurrency(exp.amount)}</div>
-            </div>
-          ))}
-
-          {expenses.length === 0 && (
-            <div className="text-gray-500 text-sm">Aún no hay tickets. Pulsa “+” para añadir.</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-
-  const TicketsView = () => (
-    <div className="space-y-4 pb-24">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">Tickets</h1>
-        <button
-          onClick={refreshFromSupabase}
-          className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm flex items-center gap-2"
-        >
-          <RefreshCw className={cn('w-4 h-4', isLoadingData && 'animate-spin')} />
-          Refrescar
-        </button>
-      </div>
-
-      {isLoadingData && (
-        <div className="flex items-center gap-2 text-gray-500">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Cargando…
-        </div>
-      )}
-
-      {dataError && (
-        <div className="rounded-xl bg-amber-50 text-amber-700 px-4 py-3 text-sm">
-          {dataError}
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {expenses.map(exp => (
-          <div key={exp.id} className="bg-white rounded-3xl shadow-sm p-4">
-            <div className="flex items-start justify-between">
-              <div className="flex items-start space-x-3">
-                <div className="text-2xl mt-1">{categories.find(c => c.name === exp.category)?.icon}</div>
-                <div>
-                  <div className="font-bold text-gray-900 text-lg">{exp.merchant || '—'}</div>
-                  <div className="text-gray-500 text-sm">{formatDate(exp.date)} · {exp.category}</div>
-                </div>
+                <button onClick={() => setIsEditingLimit(true)} className="p-2 bg-slate-50 rounded-full text-slate-400 hover:text-indigo-600"><Settings size={16} /></button>
               </div>
 
-              <div className="flex items-center space-x-3">
-                <div className="font-bold text-gray-900 text-lg">{formatCurrency(exp.amount)}</div>
-                <button
-                  onClick={() => handleDeleteExpense(exp.id)}
-                  className="p-2 rounded-full hover:bg-gray-100 text-gray-400 hover:text-red-500"
-                  title="Borrar"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {exp.imageUrl && (
-              <div className="mt-3">
-                <img src={exp.imageUrl} alt="Ticket" className="w-full rounded-2xl object-cover max-h-64" />
-              </div>
-            )}
-          </div>
-        ))}
-
-        {expenses.length === 0 && !isLoadingData && (
-          <div className="text-gray-500 text-sm">No hay tickets todavía.</div>
-        )}
-      </div>
-    </div>
-  );
-
-  const BottomNav = () => (
-    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 pb-safe">
-      <div className="flex items-center justify-around py-3">
-        <button
-          onClick={() => setActiveTab('dashboard')}
-          className={cn(
-            "flex flex-col items-center space-y-1 px-4 py-2 rounded-2xl",
-            activeTab === 'dashboard' ? "text-indigo-600" : "text-gray-400"
-          )}
-        >
-          <PieChart className="w-6 h-6" />
-          <span className="text-xs font-medium">DASHBOARD</span>
-        </button>
-
-        <button
-          onClick={() => setShowUpload(true)}
-          className="bg-indigo-600 p-4 rounded-full shadow-lg -mt-8 text-white hover:bg-indigo-700 transition-colors"
-          title="Añadir ticket"
-        >
-          <Plus className="w-8 h-8" />
-        </button>
-
-        <button
-          onClick={() => setActiveTab('tickets')}
-          className={cn(
-            "flex flex-col items-center space-y-1 px-4 py-2 rounded-2xl",
-            activeTab === 'tickets' ? "text-indigo-600" : "text-gray-400"
-          )}
-        >
-          <List className="w-6 h-6" />
-          <span className="text-xs font-medium">TICKETS</span>
-        </button>
-      </div>
-    </div>
-  );
-
-  const UploadModal = () => {
-    if (!showUpload) return null;
-
-    return (
-      <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
-        <div className="bg-white w-full max-w-md rounded-t-3xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">Añadir ticket</h2>
-            <button onClick={() => { setShowUpload(false); setSelectedImage(null); setPendingExpense(null); }} className="p-2 rounded-full hover:bg-gray-100">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {!selectedImage && !isProcessing && !pendingExpense && (
-            <div className="grid grid-cols-2 gap-4">
-              <button
-                onClick={startCamera}
-                className="flex flex-col items-center justify-center p-6 bg-gray-50 rounded-3xl hover:bg-gray-100"
-              >
-                <Camera className="w-10 h-10 text-indigo-600" />
-                <span className="mt-2 font-medium">Cámara</span>
-              </button>
-
-              <label className="flex flex-col items-center justify-center p-6 bg-gray-50 rounded-3xl hover:bg-gray-100 cursor-pointer">
-                <Upload className="w-10 h-10 text-indigo-600" />
-                <span className="mt-2 font-medium">Subir foto</span>
-                <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-              </label>
-            </div>
-          )}
-
-          {showCamera && (
-            <div className="space-y-4">
-              <video ref={videoRef} className="w-full rounded-3xl bg-black" playsInline />
-              <canvas ref={canvasRef} className="hidden" />
-              <button
-                onClick={capturePhoto}
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700"
-              >
-                Capturar
-              </button>
-              <button
-                onClick={() => { stopCamera(); setShowUpload(true); }}
-                className="w-full py-3 bg-gray-100 rounded-2xl font-medium"
-              >
-                Cancelar
-              </button>
-            </div>
-          )}
-
-          {isProcessing && (
-            <div className="flex flex-col items-center justify-center py-10 space-y-3">
-              <Loader2 className="w-10 h-10 animate-spin text-indigo-600" />
-              <div className="text-gray-700 font-medium">Procesando ticket…</div>
-            </div>
-          )}
-
-          {pendingExpense && !isProcessing && (
-            <div className="space-y-4">
-              {previewImage && (
-                <img src={previewImage} alt="Ticket" className="w-full rounded-3xl object-cover max-h-64" />
-              )}
-
-              <div className="bg-gray-50 rounded-3xl p-4 space-y-3">
-                <div>
-                  <div className="text-xs text-gray-500 font-medium">Comercio</div>
-                  <input
-                    value={pendingExpense.merchant}
-                    onChange={e => setPendingExpense({ ...pendingExpense, merchant: e.target.value })}
-                    className="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs text-gray-500 font-medium">Importe</div>
-                    <input
-                      type="number"
-                      value={pendingExpense.amount}
-                      onChange={e => setPendingExpense({ ...pendingExpense, amount: parseFloat(e.target.value) || 0 })}
-                      className="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200"
-                    />
+              <div className="flex flex-col items-center justify-center py-4">
+                <div className="h-48 w-full relative">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={gaugeData} cx="50%" cy="100%" startAngle={180} endAngle={0} innerRadius={85} outerRadius={115} dataKey="value" stroke="none">
+                        <Cell fill={isOverLimit ? '#ef4444' : '#6366f1'} /><Cell fill="#f1f5f9" />
+                      </Pie>
+                      <Pie data={[{ value: 1 }]} cx="50%" cy="100%" startAngle={180 - (monthlyLimit / gaugeMax) * 180 + 1} endAngle={180 - (monthlyLimit / gaugeMax) * 180 - 1} innerRadius={80} outerRadius={120} dataKey="value" stroke="none" isAnimationActive={false}>
+                        <Cell fill="#1e293b" />
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="absolute inset-0 flex flex-col items-center justify-end pb-4">
+                    <span className="text-3xl font-bold">{totalCurrentMonth.toLocaleString('es-ES', { maximumFractionDigits: 0 })}€</span>
+                    <div className="flex items-center gap-1 text-xs text-slate-400"><span>Límite:</span><span className="text-slate-800 font-bold">{monthlyLimit}€</span></div>
                   </div>
-                  <div>
-                    <div className="text-xs text-gray-500 font-medium">Fecha</div>
-                    <input
-                      type="date"
-                      value={pendingExpense.date}
-                      onChange={e => setPendingExpense({ ...pendingExpense, date: e.target.value })}
-                      className="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200"
-                    />
+                  <div className="absolute text-[10px] font-bold text-slate-800 bg-white px-1 rounded shadow-sm border" style={{ left: `${50 + 45 * Math.cos((1 - monthlyLimit / gaugeMax) * Math.PI)}%`, top: `${100 - 90 * Math.sin((monthlyLimit / gaugeMax) * Math.PI)}%`, transform: 'translate(-50%, -100%)' }}>LÍMITE</div>
+                </div>
+                {isOverLimit && <div className="mt-6 flex items-center gap-2 text-red-600 bg-red-50 px-4 py-2 rounded-full text-sm font-bold border border-red-100 shadow-sm"><AlertCircle size={16} /><span>¡Excedido por {(totalCurrentMonth - monthlyLimit).toFixed(0)}€!</span></div>}
+              </div>
+
+              {isEditingLimit && (
+                <div className="absolute inset-0 bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 z-20">
+                  <p className="text-sm font-bold text-slate-500 uppercase mb-4">Ajustar Límite</p>
+                  <div className="flex items-center gap-3">
+                    <input type="number" value={tempLimit} onChange={(e) => setTempLimit(e.target.value)} className="w-32 text-2xl font-bold text-center border-b-2 border-indigo-600 p-2 focus:outline-none" autoFocus />
+                    <span className="text-xl font-bold text-slate-400">€</span>
                   </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-gray-500 font-medium">Categoría</div>
-                  <select
-                    value={pendingExpense.category}
-                    onChange={e => setPendingExpense({ ...pendingExpense, category: e.target.value as Category })}
-                    className="w-full mt-1 px-3 py-2 rounded-xl border border-gray-200"
-                  >
-                    {categories.map(c => (
-                      <option key={c.name} value={c.name}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <button
-                onClick={handleConfirmExpense}
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 flex items-center justify-center gap-2"
-              >
-                <Check className="w-5 h-5" />
-                Guardar
-              </button>
-
-              <button
-                onClick={() => { setPendingExpense(null); setSelectedImage(null); setPreviewImage(null); }}
-                className="w-full py-3 bg-gray-100 rounded-2xl font-medium"
-              >
-                Cancelar
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const SettingsModal = () => {
-    if (!showSettings) return null;
-
-    return (
-      <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
-        <div className="bg-white w-full max-w-md rounded-t-3xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">Ajustes</h2>
-            <button onClick={() => setShowSettings(false)} className="p-2 rounded-full hover:bg-gray-100">
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          <div className="bg-gray-50 rounded-3xl p-4 space-y-3">
-            <div className="text-sm text-gray-500 font-medium">Límite mensual</div>
-
-            {!isEditingLimit ? (
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold">{formatCurrency(monthlyLimit)}</div>
-                <button
-                  onClick={() => { setTempLimit(monthlyLimit.toString()); setIsEditingLimit(true); }}
-                  className="px-3 py-2 rounded-xl bg-white shadow text-gray-700 font-medium"
-                >
-                  Editar
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <input
-                  type="number"
-                  value={tempLimit}
-                  onChange={e => setTempLimit(e.target.value)}
-                  className="w-full px-3 py-3 rounded-2xl border border-gray-200 text-lg"
-                />
-                <div className="flex gap-3">
-                  <button
-                    onClick={async () => {
+                  <div className="flex gap-4 mt-8">
+                    <button onClick={() => setIsEditingLimit(false)} className="px-6 py-2 text-slate-500 font-medium">Cancelar</button>
+                    <button onClick={async () => {
                       const newLimit = parseFloat(tempLimit) || 0;
                       setMonthlyLimit(newLimit);
                       setIsEditingLimit(false);
+                      await supabase.from('app_settings').upsert({ id: 1, monthly_limit: newLimit }, { onConflict: 'id' });
+                    }} className="px-8 py-2 bg-indigo-600 text-white rounded-full font-bold shadow-lg">Guardar</button>
+                  </div>
+                </div>
+              )}
+            </div>
 
-                      // Guardar también en Supabase (tabla app_settings, fila id=1)
-                      try {
-                        const { error } = await supabase
-                          .from('app_settings')
-                          .upsert({ id: 1, monthly_limit: newLimit }, { onConflict: 'id' });
-                        if (error) throw error;
-                      } catch (err) {
-                        console.error(err);
-                        // No bloqueamos la UI: queda al menos en cache local
-                      }
-                    }}
-                    className="flex-1 py-3 bg-indigo-600 text-white rounded-2xl font-bold"
-                  >
-                    Guardar
-                  </button>
-                  <button
-                    onClick={() => setIsEditingLimit(false)}
-                    className="flex-1 py-3 bg-white rounded-2xl font-bold border border-gray-200"
-                  >
-                    Cancelar
-                  </button>
+            {/* Categorías */}
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-base font-bold text-slate-800">Gastos por Categoría</h2>
+                <div className={cn("flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-md", percentChange > 0 ? "text-red-600 bg-red-50" : "text-emerald-600 bg-emerald-50")}>
+                  {percentChange > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+                  <span>{Math.abs(percentChange).toFixed(0)}% vs mes ant.</span>
                 </div>
               </div>
-            )}
-          </div>
+              {chartData.length > 0 ? (
+                <div className="h-64 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={chartData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={2} dataKey="value">
+                        {chartData.map((entry, index) => <Cell key={`cell-${index}`} fill={CATEGORY_COLORS[entry.name] || CATEGORY_COLORS['Otros']} />)}
+                      </Pie>
+                      <Tooltip formatter={(value: number) => [`${value.toFixed(2)} €`, 'Total']} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                      <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '10px', paddingTop: '20px' }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : <div className="text-center py-12 text-slate-500">Sin gastos este mes.</div>}
+            </div>
 
-          <div className="text-xs text-gray-500">
-            * Nota: los tickets se guardan en Supabase. Las imágenes todavía no (si quieres, lo siguiente es guardarlas en Storage).
+            {/* Histórico */}
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+              <h2 className="text-base font-bold text-slate-800 mb-6">Histórico y Tendencia</h2>
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={historyData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 600 }} dy={10} />
+                    <YAxis hide />
+                    <Tooltip formatter={(value: number) => [`${value.toFixed(0)} €`, 'Gasto']} contentStyle={{ borderRadius: '12px', border: 'none' }} />
+                    <Bar dataKey="total" radius={[4, 4, 0, 0]} barSize={30}>
+                      {historyData.map((entry, index) => <Cell key={`cell-${index}`} fill={isSameMonth(entry.date, currentMonth) ? '#6366f1' : '#e2e8f0'} />)}
+                    </Bar>
+                    <ReferenceLine y={monthlyLimit} stroke="#ef4444" strokeDasharray="5 5" label={{ position: 'right', value: `Límite: ${monthlyLimit}€`, fill: '#ef4444', fontSize: 10, fontWeight: 'bold' }} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </motion.div>
+        ) : (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+            <div className="flex justify-between items-center px-1">
+              <h2 className="text-lg font-bold text-slate-800">Listado de Gastos</h2>
+              <span className="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-md">{expenses.length} tickets</span>
+            </div>
+            {expenses.length === 0 ? <div className="text-center py-12 text-slate-400 font-medium">No hay gastos todavía.</div> : (
+              <div className="space-y-3">
+                {expenses.map((expense) => (
+                  <motion.div layout key={expense.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 grid grid-cols-[auto_1fr_auto] items-center gap-4 group">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0 shadow-sm" style={{ backgroundColor: CATEGORY_COLORS[expense.category] || CATEGORY_COLORS['Otros'] }}>
+                      <span className="text-[10px] font-bold">{expense.category.substring(0, 2).toUpperCase()}</span>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-900 truncate pr-2">{expense.merchant}</p>
+                      <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
+                        <span className="truncate max-w-[80px]">{expense.category}</span>
+                        <span className="w-1 h-1 bg-slate-200 rounded-full shrink-0" />
+                        <span className="shrink-0">{format(parseISO(expense.date), 'dd MMM yyyy', { locale: es })}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-bold text-slate-900 text-right min-w-[60px]">{expense.amount.toFixed(2)}€</span>
+                      <button onClick={() => handleDeleteExpense(expense.id)} className="w-9 h-9 flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-all"><Trash2 size={18} /></button>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </main>
+
+      <div className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 pb-safe z-30">
+        <div className="max-w-md mx-auto px-6 h-16 flex items-center justify-around relative">
+          <button onClick={() => setActiveTab('dashboard')} className={cn("flex flex-col items-center justify-center w-16 h-full gap-1", activeTab === 'dashboard' ? "text-indigo-600" : "text-slate-400")}>
+            <PieChartIcon size={20} /><span className="text-[10px] font-bold uppercase">Dashboard</span>
+          </button>
+          <div className="w-16"></div>
+          <button onClick={() => setActiveTab('list')} className={cn("flex flex-col items-center justify-center w-16 h-full gap-1", activeTab === 'list' ? "text-indigo-600" : "text-slate-400")}>
+            <List size={20} /><span className="text-[10px] font-bold uppercase">Tickets</span>
+          </button>
+          <div className="absolute left-1/2 -top-6 -translate-x-1/2">
+            <button onClick={() => fileInputRef.current?.click()} className="w-14 h-14 bg-indigo-600 text-white rounded-full shadow-xl flex items-center justify-center border-4 border-white"><Plus size={28} /></button>
           </div>
         </div>
       </div>
-    );
-  };
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-md mx-auto p-4">
-        <header className="flex items-center space-x-3 py-4">
-          <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white font-bold">
-            <Camera className="w-6 h-6" />
+      <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" capture="environment" className="hidden" />
+
+      <AnimatePresence>
+        {(isProcessing || pendingExpense) && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden">
+              {isProcessing ? (
+                <div className="p-10 flex flex-col items-center justify-center text-center space-y-6">
+                  <div className="relative"><div className="w-20 h-20 border-4 border-indigo-100 rounded-full" /><Loader2 className="w-20 h-20 text-indigo-600 animate-spin absolute inset-0" /></div>
+                  <div><h3 className="text-xl font-bold text-slate-800">Analizando ticket...</h3><p className="text-sm text-slate-500 mt-2">Nuestra IA está leyendo los detalles.</p></div>
+                </div>
+              ) : pendingExpense ? (
+                <div className="flex flex-col max-h-[85vh]">
+                  <div className="p-5 border-b bg-slate-50 flex justify-between items-center"><h3 className="font-bold text-slate-800">Confirmar Ticket</h3><button onClick={() => setPendingExpense(null)} className="w-8 h-8 flex items-center justify-center bg-white rounded-full text-slate-400"><X size={18} /></button></div>
+                  <div className="p-6 space-y-5 overflow-y-auto">
+                    {previewImage && <div className="w-full h-40 bg-slate-100 rounded-2xl overflow-hidden"><img src={previewImage} alt="Ticket" className="w-full h-full object-cover" /></div>}
+                    <div className="space-y-4">
+                      <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Establecimiento</label><input type="text" value={pendingExpense.merchant} onChange={(e) => setPendingExpense({...pendingExpense, merchant: e.target.value})} className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-semibold focus:outline-none focus:border-indigo-500" /></div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Importe (€)</label><input type="number" step="0.01" value={pendingExpense.amount} onChange={(e) => setPendingExpense({...pendingExpense, amount: parseFloat(e.target.value) || 0})} className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-bold focus:outline-none focus:border-indigo-500" /></div>
+                        <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Fecha</label><input type="date" value={pendingExpense.date} onChange={(e) => setPendingExpense({...pendingExpense, date: e.target.value})} className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-semibold focus:outline-none focus:border-indigo-500" /></div>
+                      </div>
+                      <div className="space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Categoría</label><select value={pendingExpense.category} onChange={(e) => setPendingExpense({...pendingExpense, category: e.target.value})} className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-semibold focus:outline-none focus:border-indigo-500 appearance-none">
+                        {Object.keys(CATEGORY_COLORS).map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                      </select></div>
+                    </div>
+                  </div>
+                  <div className="p-5 border-t grid grid-cols-2 gap-4 bg-slate-50">
+                    <button onClick={() => { setPendingExpense(null); setPreviewImage(null); }} className="px-4 py-3 rounded-2xl font-bold text-slate-500 bg-white border">Descartar</button>
+                    <button onClick={handleConfirmExpense} className="px-4 py-3 rounded-2xl font-bold text-white bg-indigo-600 shadow-lg flex items-center justify-center gap-2"><Check size={20} />Confirmar</button>
+                  </div>
+                </div>
+              ) : null}
+            </motion.div>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">GastoSnap</h1>
-        </header>
-
-        {activeTab === 'dashboard' ? <DashboardView /> : <TicketsView />}
-      </div>
-
-      <BottomNav />
-      <UploadModal />
-      <SettingsModal />
+        )}
+      </AnimatePresence>
     </div>
   );
-};
-
-export default App;
+}
