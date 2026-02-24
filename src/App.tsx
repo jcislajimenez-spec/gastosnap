@@ -39,7 +39,10 @@ const CATEGORY_COLORS: Record<string, { color: string; icon: string }> = {
 
 export default function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [monthlyLimit, setMonthlyLimit] = useState<number>(1250);
+  const [monthlyLimit, setMonthlyLimit] = useState<number>(() => {
+    const saved = localStorage.getItem('gastosnap_limit');
+    return saved ? Number(saved) : 1250;
+  });
   const [isLoading, setIsLoading] = useState(true);
   
   // Gestión de Usuarios
@@ -83,7 +86,11 @@ export default function App() {
           })));
         }
         const { data: settings } = await supabase.from('app_settings').select('monthly_limit').eq('id', 1).maybeSingle();
-        if (settings) setMonthlyLimit(Number(settings.monthly_limit));
+        if (settings) {
+          const limit = Number(settings.monthly_limit);
+          setMonthlyLimit(limit);
+          localStorage.setItem('gastosnap_limit', limit.toString());
+        }
       } catch (e) {
         console.error(e);
       } finally { setIsLoading(false); }
@@ -267,8 +274,8 @@ export default function App() {
                   <Pie data={gaugeData} cx="50%" cy="100%" startAngle={180} endAngle={0} innerRadius={80} outerRadius={110} dataKey="value" stroke="none">
                     <Cell fill={isOverLimit ? '#ef4444' : '#6366f1'} /><Cell fill="#f1f5f9" />
                   </Pie>
-                  <Pie data={[{v:1}]} cx="50%" cy="100%" startAngle={180-(monthlyLimit/gaugeMax)*180+1} endAngle={180-(monthlyLimit/gaugeMax)*180-1} innerRadius={75} outerRadius={115} dataKey="v" stroke="none">
-                    <Cell fill="#ef4444" /> {/* MARCA ROJA */}
+                  <Pie data={[{v:1}]} cx="50%" cy="100%" startAngle={180-(monthlyLimit/gaugeMax)*180+2} endAngle={180-(monthlyLimit/gaugeMax)*180-2} innerRadius={75} outerRadius={115} dataKey="v" stroke="none">
+                    <Cell fill="#ef4444" /> {/* MARCA ROJA MÁS ANCHA */}
                   </Pie>
                 </PieChart></ResponsiveContainer>
                 <div className="absolute inset-0 flex flex-col items-center justify-end pb-4">
@@ -282,7 +289,13 @@ export default function App() {
                   <input type="number" value={tempLimit} onChange={e => setTempLimit(e.target.value)} className="text-3xl font-bold text-center border-b-2 border-indigo-600 w-32 mb-6 focus:outline-none" />
                   <div className="flex gap-4">
                     <button onClick={() => setIsEditingLimit(false)} className="px-4 py-2 text-slate-400">Cancelar</button>
-                    <button onClick={async () => { setMonthlyLimit(Number(tempLimit)); setIsEditingLimit(false); await supabase.from('app_settings').upsert({ id: 1, monthly_limit: Number(tempLimit) }); }} className="px-6 py-2 bg-indigo-600 text-white rounded-full font-bold">Guardar</button>
+                    <button onClick={async () => { 
+                      const newLimit = Number(tempLimit);
+                      setMonthlyLimit(newLimit); 
+                      localStorage.setItem('gastosnap_limit', newLimit.toString());
+                      setIsEditingLimit(false); 
+                      await supabase.from('app_settings').upsert({ id: 1, monthly_limit: newLimit }); 
+                    }} className="px-6 py-2 bg-indigo-600 text-white rounded-full font-bold">Guardar</button>
                   </div>
                 </div>
               )}
@@ -301,10 +314,16 @@ export default function App() {
 
             <div className="bg-white rounded-2xl p-6 shadow-sm border">
               <h2 className="font-bold mb-4">Histórico Mensual</h2>
-              <div className="h-64"><ResponsiveContainer><ComposedChart data={historyData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+              <div className="h-64"><ResponsiveContainer><ComposedChart data={historyData} margin={{ top: 40, right: 30, left: 10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize:10, fontWeight: 'bold'}} />
-                <YAxis axisLine={false} tickLine={false} tick={{fontSize:10, fill: '#94a3b8'}} />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{fontSize:10, fill: '#94a3b8'}} 
+                  tickFormatter={(v) => `${v}€`}
+                  domain={[0, Math.max(monthlyLimit * 1.2, ...historyData.map(d => d.total + 200))]}
+                />
                 <Tooltip formatter={(v:number) => [`${v}€`, 'Gasto']} />
                 <Bar dataKey="total" fill="#e2e8f0" radius={[4,4,0,0]} barSize={30}>
                   {historyData.map((e, i) => <Cell key={i} fill={isSameMonth(e.date, currentMonth) ? '#6366f1' : '#cbd5e1'} />)}
@@ -313,14 +332,15 @@ export default function App() {
                 <ReferenceLine 
                   y={monthlyLimit} 
                   stroke="#ef4444" 
-                  strokeDasharray="3 3" 
+                  strokeDasharray="4 4" 
+                  strokeWidth={2}
                   label={{
-                    value: `${monthlyLimit}€`, 
+                    value: `LÍMITE: ${monthlyLimit}€`, 
                     position: 'top', 
                     fill: '#ef4444', 
-                    fontSize: 10, 
+                    fontSize: 11, 
                     fontWeight: 'bold',
-                    offset: 10
+                    offset: 15
                   }} 
                 />
               </ComposedChart></ResponsiveContainer></div>
