@@ -6,7 +6,6 @@ import { es } from 'date-fns/locale';
 import { parseReceipt, ReceiptData } from './services/gemini';
 import { cn } from './lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
-import { supabase } from './lib/supabase';
 import * as XLSX from 'xlsx';
 
 export interface Expense {
@@ -305,12 +304,24 @@ export default function App() {
                   <input type="number" value={tempLimit} onChange={e => setTempLimit(e.target.value)} className="text-3xl font-bold text-center border-b-2 border-indigo-600 w-32 mb-6 focus:outline-none" />
                   <div className="flex gap-4">
                     <button onClick={() => setIsEditingLimit(false)} className="px-4 py-2 text-slate-400">Cancelar</button>
-                    <button onClick={async () => { 
+                    <button onClick={async () => {
                       const newLimit = Number(tempLimit);
-                      setMonthlyLimit(newLimit); 
+                      setMonthlyLimit(newLimit);
                       localStorage.setItem('gastosnap_limit', newLimit.toString());
-                      setIsEditingLimit(false); 
-                      await supabase.from('app_settings').upsert({ id: 1, monthly_limit: newLimit }); 
+                      setIsEditingLimit(false);
+
+                      try {
+                        const res = await fetch('/api/settings', {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ monthly_limit: newLimit })
+                        });
+
+                        if (!res.ok) throw new Error('Error guardando límite mensual');
+                      } catch (e) {
+                        console.error(e);
+                        alert('Error guardando límite mensual');
+                      }
                     }} className="px-6 py-2 bg-indigo-600 text-white rounded-full font-bold">Guardar</button>
                   </div>
                 </div>
