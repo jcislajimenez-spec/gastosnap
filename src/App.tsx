@@ -68,33 +68,43 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) return;
+
     const loadData = async () => {
       try {
         setIsLoading(true);
-        const { data: tickets, error: ticketsError } = await supabase
-          .from('tickets').select('*').order('date', { ascending: false });
-        if (ticketsError) throw ticketsError;
+
+        const ticketsRes = await fetch('/api/tickets');
+        if (!ticketsRes.ok) throw new Error('Error cargando tickets');
+        const tickets = await ticketsRes.json();
+
         if (tickets) {
-          setExpenses(tickets.map(t => ({
-            id: t.id, 
-            merchant: t.description || '', 
+          setExpenses(tickets.map((t: any) => ({
+            id: t.id,
+            merchant: t.description || '',
             amount: Number(t.amount),
-            date: t.date, 
-            category: t.category || 'Otros', 
+            date: t.date,
+            category: t.category || 'Otros',
             createdAt: t.created_at,
             userName: t.user_name || 'Principal'
           })));
         }
-        const { data: settings } = await supabase.from('app_settings').select('monthly_limit').eq('id', 1).maybeSingle();
-        if (settings) {
+
+        const settingsRes = await fetch('/api/settings');
+        if (!settingsRes.ok) throw new Error('Error cargando límite mensual');
+        const settings = await settingsRes.json();
+
+        if (settings?.monthly_limit !== undefined) {
           const limit = Number(settings.monthly_limit);
           setMonthlyLimit(limit);
           localStorage.setItem('gastosnap_limit', limit.toString());
         }
       } catch (e) {
         console.error(e);
-      } finally { setIsLoading(false); }
+      } finally {
+        setIsLoading(false);
+      }
     };
+
     loadData();
   }, [currentUser]);
 
