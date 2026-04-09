@@ -188,7 +188,8 @@ export default function App() {
   };
 
   const handleDeleteExpense = async (id: string) => {
-    await supabase.from('tickets').delete().eq('id', id);
+    const res = await fetch(`/api/tickets/${id}`, { method: 'DELETE' });
+    if (!res.ok) return;
     setExpenses(prev => prev.filter(e => e.id !== id));
   };
 
