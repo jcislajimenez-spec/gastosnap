@@ -161,20 +161,25 @@ export default function App() {
     if (!pendingExpense) return;
     setIsProcessing(true);
     try {
-      const { data, error } = await supabase.from('tickets').insert([{
-        description: pendingExpense.merchant, 
-        amount: pendingExpense.amount,
-        date: pendingExpense.date, 
-        category: pendingExpense.category,
-        user_name: currentUser
-      }]).select().single();
-      if (error) throw error;
-      setExpenses(prev => [{ 
-        id: data.id, 
-        merchant: data.description, 
-        amount: Number(data.amount), 
-        date: data.date, 
-        category: data.category, 
+      const res = await fetch('/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: pendingExpense.merchant,
+          amount: pendingExpense.amount,
+          date: pendingExpense.date,
+          category: pendingExpense.category,
+          user_name: currentUser
+        })
+      });
+      if (!res.ok) throw new Error('Error al guardar');
+      const data = await res.json();
+      setExpenses(prev => [{
+        id: data.id,
+        merchant: data.description,
+        amount: Number(data.amount),
+        date: data.date,
+        category: data.category,
         createdAt: data.created_at,
         userName: data.user_name
       }, ...prev]);
