@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Plus, PieChart as PieChartIcon, List, Loader2, Check, X, Trash2, Settings, TrendingUp, TrendingDown, AlertCircle, LogOut, Download, Image as ImageIcon, UserPlus } from 'lucide-react';
+import { Camera, Plus, PieChart as PieChartIcon, List, Loader2, Check, X, Trash2, Settings, TrendingUp, TrendingDown, AlertCircle, LogOut, Download, Image as ImageIcon, UserPlus, Search } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine, ComposedChart, LabelList } from 'recharts';
 import { format, parseISO, isSameMonth, subMonths } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -61,6 +61,11 @@ export default function App() {
   
   const [isEditingLimit, setIsEditingLimit] = useState(false);
   const [tempLimit, setTempLimit] = useState(monthlyLimit.toString());
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+  const [filterUser, setFilterUser] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -190,6 +195,7 @@ export default function App() {
     const res = await fetch(`/api/tickets/${id}`, { method: 'DELETE' });
     if (!res.ok) return;
     setExpenses(prev => prev.filter(e => e.id !== id));
+    setConfirmDeleteId(null);
   };
 
   const currentMonth = new Date();
@@ -209,6 +215,23 @@ export default function App() {
 
   const gaugeMax = Math.max(monthlyLimit * 1.2, totalCurrentMonth);
   const gaugeData = [{ value: totalCurrentMonth }, { value: Math.max(0, gaugeMax - totalCurrentMonth) }];
+
+  const filteredExpenses = expenses
+    .filter(e => !filterCategory || e.category === filterCategory)
+    .filter(e => !filterUser || e.userName === filterUser)
+    .filter(e => !searchQuery ||
+      e.merchant.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      e.category.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+  const groupedExpenses = filteredExpenses.reduce((acc, e) => {
+    const monthKey = format(parseISO(e.date), 'MMMM yyyy', { locale: es });
+    if (!acc[monthKey]) acc[monthKey] = [];
+    acc[monthKey].push(e);
+    return acc;
+  }, {} as Record<string, Expense[]>);
+
+  const groupKeys = Object.keys(groupedExpenses);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-24">
@@ -374,27 +397,129 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div className="flex justify-between items-center">
               <h2 className="font-bold">Mis Tickets</h2>
-              <button onClick={handleExportExcel} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-md flex items-center gap-1"><Download size={14}/>Excel</button>
+              <button onClick={handleExportExcel} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-md flex items-center gap-1.5">
+                <Download size={13}/>Excel
+              </button>
             </div>
-            {expenses.map(e => (
-              <div key={e.id} className="bg-white p-4 rounded-xl shadow-sm border flex items-center gap-4">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center text-xl" style={{backgroundColor: CATEGORY_COLORS[e.category]?.color + '20'}}>{CATEGORY_COLORS[e.category]?.icon}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="font-bold truncate">{e.merchant}</p>
-                    <span className="text-[8px] font-bold text-indigo-500 bg-indigo-50 px-1 rounded border border-indigo-100 shrink-0">{e.userName}</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 uppercase font-bold">{e.category} • {format(parseISO(e.date), 'dd MMM')}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-bold">{e.amount.toFixed(2)}€</span>
-                  <button onClick={() => handleDeleteExpense(e.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={18}/></button>
-                </div>
+
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Buscar comercio o categoría..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-9 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <select
+                value={filterCategory}
+                onChange={e => setFilterCategory(e.target.value)}
+                className="flex-1 py-2 px-3 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                <option value="">Todas las categorías</option>
+                {Object.keys(CATEGORY_COLORS).map(c => (
+                  <option key={c} value={c}>{CATEGORY_COLORS[c].icon} {c}</option>
+                ))}
+              </select>
+              <select
+                value={filterUser}
+                onChange={e => setFilterUser(e.target.value)}
+                className="flex-1 py-2 px-3 bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              >
+                <option value="">Todos los usuarios</option>
+                {familyMembers.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+
+            {expenses.length === 0 && !isLoading ? (
+              <div className="text-center py-14">
+                <p className="text-slate-400 text-sm font-medium">Aún no hay gastos registrados</p>
+                <p className="text-slate-300 text-xs mt-1">Usa el botón + para añadir tu primer ticket</p>
               </div>
-            ))}
+            ) : filteredExpenses.length === 0 ? (
+              <div className="text-center py-14">
+                <p className="text-slate-400 text-sm font-medium">Sin resultados</p>
+                <p className="text-slate-300 text-xs mt-1">Prueba con otros filtros o términos de búsqueda</p>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {groupKeys.map(key => (
+                  <div key={key}>
+                    <div className="flex items-center justify-between mb-2 px-0.5">
+                      <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                        {key.charAt(0).toUpperCase() + key.slice(1)}
+                      </span>
+                      <span className="text-xs font-bold text-slate-500">
+                        {groupedExpenses[key].reduce((s, e) => s + e.amount, 0).toFixed(0)}€
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {groupedExpenses[key].map(e => (
+                        <div key={e.id} className="bg-white rounded-xl border border-slate-100 overflow-hidden">
+                          <div className="p-3.5 flex items-center gap-3">
+                            <div
+                              className="w-9 h-9 rounded-lg flex items-center justify-center text-base shrink-0"
+                              style={{ backgroundColor: CATEGORY_COLORS[e.category]?.color + '18' }}
+                            >
+                              {CATEGORY_COLORS[e.category]?.icon}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-sm text-slate-800 truncate leading-tight">{e.merchant}</p>
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <span className="text-[10px] text-slate-400">{format(parseISO(e.date), 'dd MMM', { locale: es })}</span>
+                                <span className="text-slate-300 text-[10px]">·</span>
+                                <span className="text-[10px] text-slate-400">{e.category}</span>
+                                <span className="text-slate-300 text-[10px]">·</span>
+                                <span className="text-[10px] font-medium text-indigo-400">{e.userName}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-bold text-sm text-slate-800">{e.amount.toFixed(2)}€</span>
+                              {confirmDeleteId === e.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleDeleteExpense(e.id)}
+                                    className="text-[10px] font-bold text-white bg-red-500 px-2 py-1 rounded-lg leading-none"
+                                  >
+                                    Sí
+                                  </button>
+                                  <button
+                                    onClick={() => setConfirmDeleteId(null)}
+                                    className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-lg leading-none"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setConfirmDeleteId(e.id)}
+                                  className="text-slate-300 hover:text-red-400 transition-colors p-0.5"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>
